@@ -12,6 +12,7 @@ Concepts worth studying in this file:
   * tkinter variables (BooleanVar) are "live" values bound to a widget.
 """
 
+import math
 import queue
 import threading
 from pathlib import Path
@@ -22,7 +23,10 @@ import customtkinter as ctk
 from deleter import delete_files
 from scanner import DuplicateGroup, find_duplicates
 
-MAX_GROUPS_SHOWN = 300  # building thousands of widgets is slow; see "Next steps"
+# customtkinter widgets are expensive (each one draws into X server pixmaps).
+# Building thousands at once is slow and can crash with "BadAlloc". So we only
+# ever build ONE PAGE of groups at a time, however many results there are.
+PAGE_SIZE = 20
 
 
 def human_size(num_bytes: float) -> str:
@@ -43,7 +47,10 @@ class App(ctk.CTk):  # CTk is the main window; we subclass it to build on top
         # ---- application state -------------------------------------------
         self.folder: str | None = None
         self.groups: list[DuplicateGroup] = []
-        self.check_vars: dict[Path, ctk.BooleanVar] = {}   # path -> checkbox state
+        # Selections live HERE, not inside the checkbox widgets. Widgets get
+        # destroyed whenever the page changes; this set survives.
+        self.selected: set[Path] = set()
+        self.page = 0
         self.result_queue: queue.Queue = queue.Queue()      # worker -> GUI messages
 
         self._build_ui()
@@ -77,6 +84,21 @@ class App(ctk.CTk):  # CTk is the main window; we subclass it to build on top
         # --- results area: a scrollable container we fill with groups later ---
         self.results = ctk.CTkScrollableFrame(self, label_text="Duplicate groups")
         self.results.pack(fill="both", expand=True, padx=12, pady=6)
+
+        # --- page navigation ---
+        nav = ctk.CTkFrame(self, fg_color="transparent")
+        nav.pack(fill="x", padx=12)
+
+        self.prev_button = ctk.CTkButton(
+            nav, text="< Prev", width=90, state="disabled", command=lambda: self._change_page(-1)
+        )
+        self.prev_button.pack(side="left")
+        self.next_button = ctk.CTkButton(
+            nav, text="Next >", width=90, state="disabled", command=lambda: self._change_page(+1)
+        )
+        self.next_button.pack(side="right")
+        self.page_label = ctk.CTkLabel(nav, text="")
+        self.page_label.pack(expand=True)
 
         # --- bottom bar: selection count + delete button ---
         bottom = ctk.CTkFrame(self)
@@ -146,27 +168,36 @@ class App(ctk.CTk):  # CTk is the main window; we subclass it to build on top
             messagebox.showerror("Scan failed", payload)
         else:
             self.groups = payload
-            self._render_groups()
+            self.selected.clear()
+            self.page = 0
+            self._render_page()
 
     # ------------------------------------------------------------------
-    # Showing results
+    # Showing results (one page at a time)
     # ------------------------------------------------------------------
-    def _render_groups(self):
+    def _total_pages(self) -> int:
+        return max(1, math.ceil(len(self.groups) / PAGE_SIZE))
+
+    def _change_page(self, step: int):
+        self.page = max(0, min(self.page + step, self._total_pages() - 1))
+        self._render_page()
+
+    def _render_page(self):
         # Wipe the old widgets before drawing new ones.
         for child in self.results.winfo_children():
             child.destroy()
-        self.check_vars.clear()
 
         if not self.groups:
-            self.status_label.configure(text="No duplicates found. 🎉")
+            self.status_label.configure(text="No duplicates found.")
+            self._update_nav()
             self._update_selection_count()
             return
 
-        shown = self.groups[:MAX_GROUPS_SHOWN]
-        note = f" (showing first {MAX_GROUPS_SHOWN})" if len(self.groups) > MAX_GROUPS_SHOWN else ""
-        self.status_label.configure(text=f"Found {len(self.groups)} duplicate groups{note}.")
+        self.page = min(self.page, self._total_pages() - 1)  # deleting may shrink the page count
+        self.status_label.configure(text=f"Found {len(self.groups)} duplicate groups.")
 
-        for group in shown:
+        start = self.page * PAGE_SIZE
+        for group in self.groups[start:start + PAGE_SIZE]:
             card = ctk.CTkFrame(self.results)
             card.pack(fill="x", padx=4, pady=5)
 
@@ -177,28 +208,48 @@ class App(ctk.CTk):  # CTk is the main window; we subclass it to build on top
                 anchor="w",
             ).pack(fill="x", padx=10, pady=(8, 2))
 
-            for file in group.files:
-                # Each checkbox owns a BooleanVar. Ticking the box changes the
-                # var; reading the var tells us the state. That's the binding.
-                var = ctk.BooleanVar(value=False)
-                self.check_vars[file.path] = var
+            for i, file in enumerate(group.files):
+                # Start ticked if the user selected this file on an earlier visit.
+                var = ctk.BooleanVar(value=file.path in self.selected)
 
+                # `p=file.path, v=var` looks odd but matters: a plain
+                # `lambda: self._on_toggle(file.path, var)` would look up
+                # `file` and `var` when CLICKED, by which time the loop has
+                # finished and every checkbox would act on the LAST file.
+                # Default arguments are evaluated NOW, freezing this
+                # iteration's values. (Classic Python closure gotcha.)
                 ctk.CTkCheckBox(
                     card,
                     text=f"{file.path.name}   ({human_size(file.size)})   {file.path.parent}",
                     variable=var,
-                    command=self._update_selection_count,  # fires on every click
-                ).pack(anchor="w", padx=20, pady=2)
+                    command=lambda p=file.path, v=var: self._on_toggle(p, v),
+                ).pack(anchor="w", padx=20, pady=(2, 8 if i == len(group.files) - 1 else 2))
 
-            ctk.CTkLabel(card, text="").pack(pady=2)  # bottom padding
+        # Jump back to the top of the list (reaches into a private attribute;
+        # fine for a personal project, but it could break in a future version).
+        try:
+            self.results._parent_canvas.yview_moveto(0)
+        except AttributeError:
+            pass
 
+        self._update_nav()
         self._update_selection_count()
 
-    def _selected_paths(self) -> list[Path]:
-        return [path for path, var in self.check_vars.items() if var.get()]
+    def _on_toggle(self, path: Path, var: ctk.BooleanVar):
+        if var.get():
+            self.selected.add(path)
+        else:
+            self.selected.discard(path)
+        self._update_selection_count()
+
+    def _update_nav(self):
+        total = self._total_pages()
+        self.page_label.configure(text=f"Page {self.page + 1} / {total}" if self.groups else "")
+        self.prev_button.configure(state="normal" if self.page > 0 else "disabled")
+        self.next_button.configure(state="normal" if self.page < total - 1 else "disabled")
 
     def _update_selection_count(self):
-        count = len(self._selected_paths())
+        count = len(self.selected)
         self.selected_label.configure(text=f"{count} file{'s' if count != 1 else ''} selected")
         self.delete_button.configure(state="normal" if count else "disabled")
 
@@ -206,14 +257,14 @@ class App(ctk.CTk):  # CTk is the main window; we subclass it to build on top
     # Deleting
     # ------------------------------------------------------------------
     def delete_selected(self):
-        selected = self._selected_paths()
+        selected = set(self.selected)
         if not selected:
             return
 
         # Safety net: warn if the user ticked EVERY file in some group,
         # because that would erase the item completely.
         wiped = [
-            g.name for g in self.groups[:MAX_GROUPS_SHOWN]
+            g.name for g in self.groups
             if all(f.path in selected for f in g.files)
         ]
         if wiped:
@@ -230,14 +281,19 @@ class App(ctk.CTk):  # CTk is the main window; we subclass it to build on top
         ):
             return
 
-        deleted, failed = delete_files(selected)
+        deleted, failed = delete_files(sorted(selected))
 
         # Update our in-memory data instead of rescanning the disk.
         deleted_set = set(deleted)
+        self.selected -= deleted_set  # failed files stay selected so the user can retry
         for group in self.groups:
             group.files = [f for f in group.files if f.path not in deleted_set]
         self.groups = [g for g in self.groups if len(g.files) > 1]  # singles aren't duplicates
-        self._render_groups()
+        # Drop selections for files that no longer appear anywhere (e.g. a failed
+        # delete whose group shrank to one file), so the counter never lies.
+        still_listed = {f.path for g in self.groups for f in g.files}
+        self.selected &= still_listed
+        self._render_page()
 
         msg = f"Moved {len(deleted)} file(s) to the trash."
         if failed:
