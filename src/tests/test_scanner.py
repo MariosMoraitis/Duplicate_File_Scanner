@@ -156,4 +156,4 @@ def test_broken_symlink(tmp_path):
 
     groups = find_duplicates(tmp_path)
     assert len(groups) == 1
-    assert names(groups[0]) == ['pic.png', 'pic.jpg']
+    assert names(groups[0]) == ['pic.jpg', 'pic.png']
