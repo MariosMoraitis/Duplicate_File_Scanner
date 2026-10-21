@@ -30,7 +30,7 @@ It knows that **`.jpg` and `.png` are both images**, so `photo_1.jpg` and `photo
 ### Linux
 
 ```bash
-git clone https://github.com/<your-username>/Duplicate_File_Scanner.git
+git clone https://github.com/MariosMoraitis/Duplicate_File_Scanner.git
 cd Duplicate_File_Scanner
 
 chmod +x install.sh run.sh    # only needed if the files lost their executable bit
@@ -45,7 +45,7 @@ chmod +x install.sh run.sh    # only needed if the files lost their executable b
 Double-click **`install.bat`**, then double-click **`run.bat`**. Or from a terminal:
 
 ```bat
-git clone https://github.com/<your-username>/Duplicate_File_Scanner.git
+git clone https://github.com/MariosMoraitis/Duplicate_File_Scanner.git
 cd Duplicate_File_Scanner
 install.bat
 run.bat
