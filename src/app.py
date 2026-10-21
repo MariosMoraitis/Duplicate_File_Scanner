@@ -45,7 +45,7 @@ class App(ctk.CTk):  # CTk is the main window; we subclass it to build on top
         self.geometry("950x680")
 
         # ---- application state -------------------------------------------
-        self.folder: str | None = None
+        self.folders: list[str] = []   # every root folder the user has added
         self.groups: list[DuplicateGroup] = []
         # Selections live HERE, not inside the checkbox widgets. Widgets get
         # destroyed whenever the page changes; this set survives.
@@ -63,14 +63,19 @@ class App(ctk.CTk):  # CTk is the main window; we subclass it to build on top
         top = ctk.CTkFrame(self)
         top.pack(fill="x", padx=12, pady=(12, 6))
 
-        ctk.CTkButton(top, text="Choose folder...", command=self.choose_folder).pack(
-            side="left", padx=8, pady=8
+        ctk.CTkButton(top, text="Add folder...", width=110, command=self.add_folder).pack(
+            side="left", padx=(8, 4), pady=8
         )
-        self.folder_label = ctk.CTkLabel(top, text="No folder selected", anchor="w")
+        self.clear_button = ctk.CTkButton(
+            top, text="Clear", width=60, fg_color="gray40", hover_color="gray30",
+            command=self.clear_folders, state="disabled",
+        )
+        self.clear_button.pack(side="left", padx=4)
+        self.folder_label = ctk.CTkLabel(top, text="No folders selected", anchor="w")
         self.folder_label.pack(side="left", padx=8, fill="x", expand=True)
 
         self.same_folder_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(top, text="Same folder only", variable=self.same_folder_var).pack(
+        ctk.CTkCheckBox(top, text="Only match within the same folder", variable=self.same_folder_var).pack(
             side="left", padx=8
         )
 
@@ -118,14 +123,32 @@ class App(ctk.CTk):  # CTk is the main window; we subclass it to build on top
         self.delete_button.pack(side="right", padx=12, pady=8)
 
     # ------------------------------------------------------------------
-    # Choosing a folder
+    # Choosing folders
     # ------------------------------------------------------------------
-    def choose_folder(self):
-        folder = filedialog.askdirectory(title="Choose a folder to scan")
-        if folder:  # empty string means the user cancelled
-            self.folder = folder
-            self.folder_label.configure(text=folder)
-            self.scan_button.configure(state="normal")
+    def add_folder(self):
+        folder = filedialog.askdirectory(title="Add a folder to scan")
+        # An empty string means the user cancelled the dialog.
+        if folder and folder not in self.folders:
+            self.folders.append(folder)
+            self._refresh_folder_label()
+
+    def clear_folders(self):
+        self.folders.clear()
+        self._refresh_folder_label()
+
+    def _refresh_folder_label(self):
+        if not self.folders:
+            text = "No folders selected"
+        elif len(self.folders) == 1:
+            text = self.folders[0]
+        else:
+            short = ", ".join(Path(f).name or f for f in self.folders)
+            text = f"{len(self.folders)} folders: {short}"
+        self.folder_label.configure(text=text)
+
+        has_folders = bool(self.folders)
+        self.scan_button.configure(state="normal" if has_folders else "disabled")
+        self.clear_button.configure(state="normal" if has_folders else "disabled")
 
     # ------------------------------------------------------------------
     # Scanning (in a background thread)
@@ -140,16 +163,16 @@ class App(ctk.CTk):  # CTk is the main window; we subclass it to build on top
 
         threading.Thread(
             target=self._scan_worker,
-            args=(self.folder, same_folder),
+            args=(list(self.folders), same_folder),  # a copy: the user may edit the list mid-scan
             daemon=True,  # daemon threads die with the program instead of blocking exit
         ).start()
 
         self.after(100, self._poll_queue)  # "call this in 100 ms" - no blocking
 
-    def _scan_worker(self, folder: str, same_folder: bool):
+    def _scan_worker(self, folders: list[str], same_folder: bool):
         """Runs in the background thread."""
         try:
-            groups = find_duplicates(folder, same_folder_only=same_folder)
+            groups = find_duplicates(folders, same_folder_only=same_folder)
             self.result_queue.put(("ok", groups))
         except Exception as exc:  # noqa: BLE001
             self.result_queue.put(("error", str(exc)))

@@ -1,0 +1,1 @@
+Move *.sh files at main directory!

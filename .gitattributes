@@ -1,0 +1,7 @@
+# Normalise line endings, but force the ones that MUST be specific:
+#  - shell scripts break with Windows (CRLF) endings on Linux
+#  - batch files misbehave with Linux (LF) endings on Windows
+* text=auto
+*.sh  text eol=lf
+*.bat text eol=crlf
+*.png binary
