@@ -6,7 +6,7 @@ A small desktop app that finds files saved under the **same name in equivalent f
 ![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)
 ![GUI](https://img.shields.io/badge/GUI-customtkinter-1f6aa5)
 
-![Duplicate File Scanner screenshot](docs/screenshot.png)
+![Duplicate File Scanner screenshot](screenshot.png)
 
 ## Why this exists
 
